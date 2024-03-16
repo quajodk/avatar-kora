@@ -1,14 +1,18 @@
 package product
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"sort"
+	"services/database"
 	"sync"
+	"time"
 )
 
+// used to store product in memory
 var productMap = struct {
 	sync.RWMutex
 	m map[int]Product
@@ -44,61 +48,68 @@ func loadProductMap() (map[int]Product, error) {
 	return prodMap, nil
 }
 
-func getProduct(productID int) *Product {
-	productMap.RLock()
-	defer productMap.RUnlock()
-	if product, ok := productMap.m[productID]; ok {
-		return &product
+func getProduct(productID int) (*Product, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	result := database.DB.QueryRowContext(ctx, "SELECT productid, manufacturer, sku, upc, priceperunit, quantityonhand, productname FROM products WHERE productid = $1", productID)
+	var product Product
+	err := result.Scan(&product.ProductID, &product.Manufacturer, &product.Sku, &product.Upc, &product.PricePerUnit, &product.QuantityOnHand, &product.ProductName)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return &product, nil
+
+}
+
+func removeProduct(productID int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, err := database.DB.QueryContext(ctx, "DELETE FROM products WHERE productid = $1", productID)
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
-func removeProduct(productID int) {
-	productMap.RLock()
-	defer productMap.RUnlock()
-	delete(productMap.m, productID)
-}
-
-func getProductList() []Product {
-	productMap.RLock()
-	products := make([]Product, 0, len(productMap.m))
-	for _, value := range productMap.m {
-		products = append(products, value)
+func getProductList() ([]Product, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	result, err := database.DB.QueryContext(ctx, `SELECT productid, manufacturer, sku, upc, priceperunit, quantityonhand, productname FROM products ORDER BY productid ASC`)
+	if err != nil {
+		return nil, err
 	}
-	productMap.RUnlock()
-	return products
-}
+	defer result.Close()
 
-func getProductIds() []int {
-	productMap.RLock()
-	productIds := []int{}
-	for key := range productMap.m {
-		productIds = append(productIds, key)
+	products := make([]Product, 0)
+	for result.Next() {
+		var product Product
+		result.Scan(&product.ProductID, &product.Manufacturer, &product.Sku, &product.Upc, &product.PricePerUnit, &product.QuantityOnHand, &product.ProductName)
+		products = append(products, product)
 	}
-	productMap.RUnlock()
-	sort.Ints(productIds)
-	return productIds
+
+	return products, nil
 }
 
-func getNextProductID() int {
-	productIDs := getProductIds()
-	return productIDs[len(productIDs)-1] + 1
-}
-
-func addOrUpdateProduct(product Product) (int, error) {
-	addOrUpdateID := -1
-	if product.ProductID > 0 {
-		oldProduct := getProduct(product.ProductID)
-		if oldProduct == nil {
-			return 0, fmt.Errorf("product id [%d] doesn't exist", oldProduct.ProductID)
-		}
-		addOrUpdateID = product.ProductID
-	} else {
-		addOrUpdateID = getNextProductID()
-		product.ProductID = addOrUpdateID
+func updateProduct(product Product) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, err := database.DB.ExecContext(ctx, "UPDATE products SET manufacturer = $1, sku = $2, upc = $3, priceperunit = $4, quantityonhand = $5, productname = $6 WHERE productid = $7", product.Manufacturer, product.Sku, product.Upc, product.PricePerUnit, product.QuantityOnHand, product.ProductName, product.ProductID)
+	if err != nil {
+		return err
 	}
-	productMap.RLock()
-	productMap.m[addOrUpdateID] = product
-	productMap.RUnlock()
-	return addOrUpdateID, nil
+	return nil
+}
+
+func addProduct(product Product) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var productID int64
+	err := database.DB.QueryRowContext(ctx, "INSERT INTO products(manufacturer, sku, upc, priceperunit, quantityonhand, productname) VALUES($1, $2, $3, $4, $5, $6) RETURNING productid", product.Manufacturer, product.Sku, product.Upc, product.PricePerUnit, product.QuantityOnHand, product.ProductName).Scan(&productID)
+	if err != nil {
+		return 0, err
+	}
+	id := productID
+	return int(id), nil
 }

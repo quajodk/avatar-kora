@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"services/cors"
 	"strconv"
@@ -27,7 +28,12 @@ func productHandler(res http.ResponseWriter, req *http.Request) {
 		res.WriteHeader(http.StatusNotFound)
 		return
 	}
-	product := getProduct(productID)
+	product, err := getProduct(productID)
+	if err != nil {
+		res.WriteHeader(http.StatusInternalServerError)
+		log.Fatal(err)
+		return
+	}
 	if product == nil {
 		res.WriteHeader(http.StatusNotFound)
 		return
@@ -45,26 +51,36 @@ func productHandler(res http.ResponseWriter, req *http.Request) {
 		res.Write(productJSON)
 	case http.MethodPut:
 		// update product in the list
-		var updateProduct Product
+		var newProduct Product
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
 			res.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		err = json.Unmarshal(bodyBytes, &updateProduct)
+		err = json.Unmarshal(bodyBytes, &newProduct)
 		if err != nil {
 			res.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if updateProduct.ProductID != productID {
+		if newProduct.ProductID != productID {
 			res.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		addOrUpdateProduct(updateProduct)
+
+		err = updateProduct(newProduct)
+		if err != nil {
+			log.Fatal(err)
+			res.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		res.WriteHeader(http.StatusOK)
 		return
 	case http.MethodDelete:
-		removeProduct(productID)
+		err := removeProduct(productID)
+		if err != nil {
+			res.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	case http.MethodOptions:
 		return
 	default:
@@ -75,14 +91,21 @@ func productHandler(res http.ResponseWriter, req *http.Request) {
 func productsHandler(res http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
-		productList := getProductList()
-		productsJson, err := json.Marshal(productList)
+		productList, err := getProductList()
 		if err != nil {
 			res.WriteHeader(http.StatusInternalServerError)
+			log.Fatal(err)
 			return
 		}
+		productsJson, err := json.Marshal(productList)
+		if err != nil {
+			log.Fatal(err)
+		}
 		res.Header().Set("Content-Type", "application/json")
-		res.Write(productsJson)
+		_, err = res.Write(productsJson)
+		if err != nil {
+			log.Fatal(err)
+		}
 	case http.MethodPost:
 		// add a new product to the list
 		var newProduct Product
@@ -100,12 +123,19 @@ func productsHandler(res http.ResponseWriter, req *http.Request) {
 			res.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		_, err = addOrUpdateProduct(newProduct)
+		id, err := addProduct(newProduct)
+		if err != nil {
+			log.Fatal(err)
+			res.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		j, err := json.Marshal(id)
 		if err != nil {
 			res.WriteHeader(http.StatusInternalServerError)
+			return
 		}
-
 		res.WriteHeader(http.StatusCreated)
+		res.Write(j)
 		return
 	case http.MethodOptions:
 		return
